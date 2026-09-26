@@ -1,9 +1,29 @@
-target
-.snfoundry_cache/
+# Build artifacts
+target/
 stellar-contracts/target/
+celo-contracts/node_modules/
+node_modules/
+
+# Cargo lock (libraries should not commit lock files)
 stellar-contracts/Cargo.lock
-test_snapshots/test/test
-ISSUES.md
-node_modules
+
+# Test snapshots
+test_snapshots/
+**/test_snapshots/
+
+# Environment and secrets
 .env
+.env.*
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Foundry cache
+.snfoundry_cache/
+
+# Misc
+ISSUES.md
 somzilla.md

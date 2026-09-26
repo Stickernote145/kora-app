@@ -6196,6 +6196,11 @@ impl KoraContract {
     /// Enforced in `add_vet_review` to bound on-chain storage and gas costs.
     #[allow(dead_code)]
     const MAX_REVIEW_COMMENT_LEN: u32 = 500;
+    /// Maximum byte length of a tag recovery message.
+    /// Enforced in `update_tag_message` to bound on-chain storage and prevent
+    /// out-of-gas errors when scanning tags on mobile dApps.
+    #[allow(dead_code)]
+    const MAX_TAG_MESSAGE_LEN: u32 = 256;
     #[allow(dead_code)]
     const MAX_SEARCH_KEYWORD_LEN: u32 = 64;
     #[allow(dead_code)]
@@ -8101,6 +8106,19 @@ impl KoraContract {
             created_at: now,
         };
 
+        // If this tag_id was previously linked to a different pet, remove that
+        // stale reverse-mapping so reverse lookups remain 1-to-1.
+        if let Some(existing_tag) = env
+            .storage()
+            .instance()
+            .get::<TagKey, PetTag>(&TagKey::Tag(tag_id.clone()))
+        {
+            if existing_tag.pet_id != pet_id {
+                env.storage()
+                    .instance()
+                    .remove(&TagKey::PetTagId(existing_tag.pet_id));
+            }
+        }
         env.storage()
             .instance()
             .set(&TagKey::Tag(tag_id.clone()), &pet_tag);
@@ -8165,6 +8183,12 @@ impl KoraContract {
                 .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))
                 .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
             pet.owner.require_auth();
+
+            if let Err(e) =
+                Self::validate_len("message", &message, KoraContract::MAX_TAG_MESSAGE_LEN)
+            {
+                panic_with_error!(&env, e);
+            }
 
             tag.message = message;
             tag.updated_at = env.ledger().timestamp();
@@ -8244,16 +8268,11 @@ impl KoraContract {
         }
     }
 
-    pub fn is_tag_active(env: Env, tag_id: BytesN<32>) -> bool {
-        if let Some(tag) = env
-            .storage()
+    pub fn is_tag_active(env: Env, tag_id: BytesN<32>) -> Option<bool> {
+        env.storage()
             .instance()
             .get::<TagKey, PetTag>(&TagKey::Tag(tag_id))
-        {
-            tag.is_active
-        } else {
-            false
-        }
+            .map(|tag| tag.is_active)
     }
 
     // --- HELPERS ---
