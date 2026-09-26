@@ -1,9 +1,28 @@
-target
-.snfoundry_cache/
+# Build artifacts
+target/
 stellar-contracts/target/
 stellar-contracts/Cargo.lock
-test_snapshots/test/test
-ISSUES.md
-node_modules
+
+# Test snapshots (generated during test runs, not source)
+test_snapshots/
+
+# Foundry / Starknet
+.snfoundry_cache/
+
+# Node / Celo
+node_modules/
+celo-contracts/node_modules/
+
+# Environment / secrets
 .env
+.env.*
+
+# OS / editor artifacts
+.DS_Store
+*.swp
+*.swo
+Thumbs.db
+
+# Misc scratch files
+ISSUES.md
 somzilla.md
