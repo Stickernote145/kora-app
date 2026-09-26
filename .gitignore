@@ -1,29 +1,40 @@
 # Build artifacts
 target/
 stellar-contracts/target/
-celo-contracts/node_modules/
-node_modules/
 
-# Cargo lock (libraries should not commit lock files)
+# Cargo lock files (workspace-level kept, sub-crate excluded)
 stellar-contracts/Cargo.lock
 
-# Test snapshots
+# Test snapshots (proptest / insta)
 test_snapshots/
 **/test_snapshots/
+**/*.snap
+**/*.snap.new
 
-# Environment and secrets
+# Environment / secrets
 .env
 .env.*
 
-# IDE and editor
+# Editor and IDE files
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# Foundry cache
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Node.js
+node_modules/
+
+# Foundry / Starknet cache
 .snfoundry_cache/
 
-# Misc
+# Misc generated docs / drafts
 ISSUES.md
 somzilla.md
+
+# JSON build artifacts (keep source JSON like package.json)
+*.min.json
