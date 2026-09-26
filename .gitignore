@@ -1,9 +1,36 @@
-target
-.snfoundry_cache/
+# Build artifacts
+target/
 stellar-contracts/target/
+
+# Cargo lock for libraries (kept at workspace root only)
 stellar-contracts/Cargo.lock
-test_snapshots/test/test
-ISSUES.md
-node_modules
+
+# Soroban / StarkNet caches
+.snfoundry_cache/
+
+# Test snapshot directories (proptest / insta / snapshots)
+test_snapshots/
+**/.test_snapshots/
+**/__snapshots__/
+*.snap
+*.snap.new
+
+# Node / JS artifacts
+node_modules/
+celo-contracts/node_modules/
+
+# Environment secrets
 .env
+.env.*
+!.env.example
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Misc files not meant for version control
+ISSUES.md
 somzilla.md
