@@ -1,41 +1,40 @@
-target
-.snfoundry_cache/
-stellar-contracts/target/
-stellar-contracts/Cargo.lock
-test_snapshots/test/test
-ISSUES.md
-node_modules
-.env
-somzilla.md
-
-# Rust build artifacts
+# Build artifacts
 target/
+stellar-contracts/target/
 
-# Test snapshots
-**/__snapshots__/
-*.snap
+# Cargo lock files (workspace-level kept, sub-crate excluded)
+stellar-contracts/Cargo.lock
 
-# Cargo lock for contracts (optional to commit)
-# Cargo.lock
+# Test snapshots (proptest / insta)
+test_snapshots/
+**/test_snapshots/
+**/*.snap
+**/*.snap.new
 
-# Environment files
+# Environment / secrets
 .env
 .env.*
-!.env.example
 
-# IDE / editor
-.idea/
+# Editor and IDE files
 .vscode/
+.idea/
 *.swp
 *.swo
+*~
 
-# Node
-node_modules/
-
-# Hardhat
-cache/
-artifacts/
-
-# OS
+# OS metadata
 .DS_Store
 Thumbs.db
+
+# Node.js
+node_modules/
+
+# Foundry / Starknet cache
+.snfoundry_cache/
+
+# Misc generated docs / drafts
+ISSUES.md
+somzilla.md
+
+# JSON build artifacts (keep source JSON like package.json)
+*.min.json
