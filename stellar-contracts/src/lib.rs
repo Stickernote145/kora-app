@@ -1805,6 +1805,7 @@ pub struct MedicalRecordAmendment {
     pub record_id: u64,
     pub version: u32,
     pub updated_at: u64,
+    pub amended_by: Address,
     pub changes: MedicalRecordAmendmentInput,
 }
 
@@ -2360,6 +2361,21 @@ pub struct MedicalRecordPurgedEvent {
     pub pet_id: u64,
     pub purged_count: u32,
     pub purged_by: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordAmendedEvent {
+    pub version: u32,
+    pub record_id: u64,
+    pub pet_id: u64,
+    pub amended_by: Address,
+    pub amendment_version: u32,
+    pub old_diagnosis: Option<String>,
+    pub new_diagnosis: Option<String>,
+    pub old_treatment: Option<String>,
+    pub new_treatment: Option<String>,
     pub timestamp: u64,
 }
 
@@ -13475,20 +13491,49 @@ impl KoraContract {
         }
     }
 
-    pub fn amend_medical_record(env: Env, pet_id: u64, record_id: u64, input: MedicalRecordAmendmentInput) -> u32 {
+    pub fn amend_medical_record(env: Env, pet_id: u64, record_id: u64, caller: Address, input: MedicalRecordAmendmentInput) -> u32 {
         let _ = pet_id;
         let record: MedicalRecord = Self::load_medical_record(&env, record_id).unwrap_or_else(|| panic_with_error!(&env, ContractError::RecordNotFound));
         record.vet_address.require_auth();
         let version: u32 = env.storage().instance().get::<MedicalKey, u32>(&MedicalKey::MedicalRecordAmendmentCount(record_id)).unwrap_or(0);
         if version >= 5 { panic_with_error!(&env, ContractError::TooManyItems); }
-        let amendment = MedicalRecordAmendment { record_id, version: version + 1, updated_at: env.ledger().timestamp(), changes: input };
+        let now = env.ledger().timestamp();
+        let amendment = MedicalRecordAmendment { record_id, version: version + 1, updated_at: now, amended_by: caller.clone(), changes: input.clone() };
         env.storage().instance().set(&MedicalKey::MedicalRecordAmendment((record_id, version + 1)), &amendment);
         env.storage().instance().set(&MedicalKey::MedicalRecordAmendmentCount(record_id), &(version + 1));
+        env.events().publish(
+            (String::from_str(&env, "MedicalRecordAmended"), record_id),
+            MedicalRecordAmendedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                record_id,
+                pet_id: record.pet_id,
+                amended_by: caller,
+                amendment_version: version + 1,
+                old_diagnosis: None,
+                new_diagnosis: input.diagnosis,
+                old_treatment: None,
+                new_treatment: input.treatment,
+                timestamp: now,
+            },
+        );
         version + 1
+    }
+
+    pub fn get_medical_record_amendment(env: Env, record_id: u64, version: u32) -> Option<MedicalRecordAmendment> {
+        env.storage().instance().get(&MedicalKey::MedicalRecordAmendment((record_id, version)))
     }
 
     pub fn diff_record_versions(env: Env, pet_id: u64, record_id: u64, from_version: u32, to_version: u32) -> Vec<MedicalFieldDiff> {
         let _ = pet_id;
+        let max_version: u32 = env.storage().instance().get::<MedicalKey, u32>(&MedicalKey::MedicalRecordAmendmentCount(record_id)).unwrap_or(0);
+        // to_version must be a valid stored version (1..=max_version)
+        if to_version == 0 || to_version > max_version {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        // from_version 0 means "diff against original"; otherwise it must be a valid version
+        if from_version != 0 && from_version > max_version {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
         let mut diffs = Vec::new(&env);
         let a: Option<MedicalRecordAmendment> = if from_version == 0 { None } else {
             env.storage().instance().get(&MedicalKey::MedicalRecordAmendment((record_id, from_version)))
