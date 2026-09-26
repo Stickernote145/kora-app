@@ -8768,7 +8768,9 @@ impl KoraContract {
         filter: MedicalRecordFilter,
         offset: u64,
         limit: u32,
+        caller: Address,
     ) -> Vec<MedicalRecord> {
+        Self::require_medical_read_access(&env, pet_id, &caller);
         // Validate date range: from must not be after to.
         if let (Some(from), Some(to)) = (filter.from_date, filter.to_date) {
             if from > to {
@@ -9258,7 +9260,7 @@ impl KoraContract {
 
     /// Return all attachments for a medical record (empty if it does not exist).
     pub fn get_attachments(env: Env, record_id: u64) -> Vec<Attachment> {
-        match Self::get_medical_record(env.clone(), record_id) {
+        match Self::get_medical_record_raw(env.clone(), record_id) {
             Some(record) => record.attachment_hashes,
             None => Vec::new(&env),
         }
@@ -9267,7 +9269,7 @@ impl KoraContract {
     /// Return the number of attachments on a medical record (0 if it does not
     /// exist). Used to enforce [`MAX_ATTACHMENTS_PER_RECORD`].
     pub fn get_attachment_count(env: Env, record_id: u64) -> u32 {
-        match Self::get_medical_record(env, record_id) {
+        match Self::get_medical_record_raw(env, record_id) {
             Some(record) => record.attachment_hashes.len(),
             None => 0,
         }
@@ -11080,7 +11082,60 @@ impl KoraContract {
         }
 
         // -----------------------------------------------------------------
-        // 3. Compact expired decryption delegation tokens
+        // 3. Compact deleted medical records in one linear pass
+        // -----------------------------------------------------------------
+        {
+            let old_count: u64 = env
+                .storage()
+                .instance()
+                .get(&MedicalKey::PetMedicalRecordCount(pet_id))
+                .unwrap_or(0);
+            let mut write_index = 1u64;
+
+            for read_index in 1..=old_count {
+                let record_id = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, read_index)));
+                let record = record_id.and_then(|id| {
+                    env.storage()
+                        .instance()
+                        .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(id))
+                });
+
+                if let Some(record) = record {
+                    if record.deleted_at.is_some() {
+                        env.storage()
+                            .instance()
+                            .remove(&MedicalKey::MedicalRecord(record.id));
+                        removed += 1;
+                    } else {
+                        if write_index != read_index {
+                            env.storage().instance().set(
+                                &MedicalKey::PetMedicalRecordIndex((pet_id, write_index)),
+                                &record.id,
+                            );
+                        }
+                        write_index += 1;
+                    }
+                }
+            }
+
+            for stale_index in write_index..=old_count {
+                env.storage()
+                    .instance()
+                    .remove(&MedicalKey::PetMedicalRecordIndex((pet_id, stale_index)));
+                removed += 1;
+            }
+
+            let new_count = write_index.saturating_sub(1);
+            env.storage()
+                .instance()
+                .set(&MedicalKey::PetMedicalRecordCount(pet_id), &new_count);
+        }
+
+        // -----------------------------------------------------------------
+        // 4. Compact expired decryption delegation tokens
         // -----------------------------------------------------------------
         // We cannot enumerate all delegates without an index, so we rely on
         // the caller supplying delegates via a separate helper, or we scan
@@ -11102,7 +11157,7 @@ impl KoraContract {
         }
 
         // -----------------------------------------------------------------
-        // 4. Compact fully-used nonce usage entries
+        // 5. Compact fully-used nonce usage entries
         // -----------------------------------------------------------------
         {
             // Nonce history is a Vec<Bytes> stored per (pet_id, key_id).
@@ -11540,6 +11595,7 @@ impl KoraContract {
         dam_id: u64,
         breeding_date: u64,
         notes: String,
+        breeder: Address,
     ) -> u64 {
         let sire: Pet = env
             .storage()
@@ -11691,10 +11747,28 @@ impl KoraContract {
 
     // ── MENDELIAN GENETICS ──────────────────────────────────────────
 
-    pub fn set_pet_traits(env: Env, pet_id: u64, traits: Map<String, Allele>) {
+    pub fn set_pet_traits(
+        env: Env,
+        pet_id: u64,
+        traits: Map<String, Allele>,
+        caller: Address,
+    ) {
+        caller.require_auth();
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        if pet.owner != caller && !Self::is_admin_address(&env, &caller) {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
         env.storage()
             .persistent()
             .set(&GeneticsKey::PetTraits(pet_id), &traits);
+        env.events().publish(
+            (String::from_str(&env, "PetTraitsUpdated"), pet_id),
+            caller,
+        );
     }
 
     pub fn get_pet_traits(env: Env, pet_id: u64) -> Map<String, Allele> {
@@ -11843,6 +11917,7 @@ impl KoraContract {
         breeding_date: u64,
         notes: String,
         max_coi_bp: u32,
+        breeder: Address,
     ) -> u64 {
         if sire_id == dam_id {
             panic_with_error!(&env, ContractError::SelfBreeding);
@@ -11853,7 +11928,7 @@ impl KoraContract {
             panic_with_error!(&env, ContractError::InbreedingThresholdExceeded);
         }
 
-        Self::add_breeding_record(env, sire_id, dam_id, breeding_date, notes)
+        Self::add_breeding_record(env, sire_id, dam_id, breeding_date, notes, breeder)
     }
 
     // ── #764: remove_admin with threshold guard ───────────────────────────────
@@ -12150,6 +12225,7 @@ impl KoraContract {
         pet_id: u64,
         offset: u64,
         limit: u32,
+        caller: Address,
     ) -> Vec<MedicalRecord> {
         Self::bump_instance_ttl(&env);
         let count: u64 = env
@@ -12169,7 +12245,7 @@ impl KoraContract {
                 .instance()
                 .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
             {
-                if let Some(record) = Self::get_medical_record(env.clone(), record_id) {
+                if let Some(record) = Self::get_medical_record(env.clone(), record_id, caller.clone()) {
                     results.push_back(record);
                 }
             }
@@ -12519,7 +12595,8 @@ impl KoraContract {
         env.storage().instance().get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id)).unwrap_or(0)
     }
 
-    pub fn search_by_keyword(env: Env, pet_id: u64, keyword: String) -> Vec<MedicalRecord> {
+    pub fn search_by_keyword(env: Env, pet_id: u64, keyword: String, caller: Address) -> Vec<MedicalRecord> {
+        Self::require_medical_read_access(&env, pet_id, &caller);
         if keyword.len() > crate::MAX_SEARCH_KEYWORD_LEN {
             panic_with_error!(&env, ContractError::KeywordTooLong);
         }
@@ -12527,7 +12604,7 @@ impl KoraContract {
         let mut results = Vec::new(&env);
         for i in 1..=count {
             if let Some(record_id) = env.storage().instance().get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i))) {
-                if let Some(record) = Self::get_medical_record(env.clone(), record_id) {
+                if let Some(record) = Self::get_medical_record(env.clone(), record_id, caller.clone()) {
                     if Self::string_contains(&env, &record.diagnosis, &keyword) || Self::string_contains(&env, &record.notes, &keyword) {
                         results.push_back(record);
                     }
