@@ -7020,13 +7020,28 @@ impl KoraContract {
         history
     }
 
+    /// Returns vaccinations for `pet_id` whose `next_due_date` falls within the
+    /// upcoming `window_days` days.
+    ///
+    /// # Arguments
+    /// * `pet_id`      - The ID of the pet
+    /// * `window_days` - Lookup window in days. Defaults to **30** when `None`.
+    ///                   Capped at a maximum of **365** days to stay within
+    ///                   Soroban instruction budgets.
     pub fn get_upcoming_vaccinations(
         env: Env,
         pet_id: u64,
-        days_threshold: u64,
+        window_days: Option<u64>,
     ) -> Vec<Vaccination> {
+        // Default to 30 days; cap at 365 days (issue #90).
+        const DEFAULT_WINDOW: u64 = 30;
+        const MAX_WINDOW: u64 = 365;
+        let days = match window_days {
+            Some(d) => d.min(MAX_WINDOW),
+            None => DEFAULT_WINDOW,
+        };
         let current_time = env.ledger().timestamp();
-        let threshold = current_time + (days_threshold * 86400);
+        let threshold = current_time + (days * 86400);
         let history = KoraContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
         let mut upcoming = Vec::new(&env);
 
@@ -7178,6 +7193,71 @@ impl KoraContract {
         result
     }
 
+    /// Returns vaccinations administered by `vet_address` that expire within
+    /// `within_days` days (or are already expired).
+    ///
+    /// Unlike the per-pet `get_expiring_vaccinations`, this function uses the
+    /// `VetVaccinationIndex` to iterate only the vaccinations recorded by the
+    /// given vet, avoiding a full O(pets × vaccinations) matrix scan that would
+    /// exceed Soroban instruction budgets for large registries (issue #91).
+    ///
+    /// # Arguments
+    /// * `vet_address` - The vet whose administered vaccinations are scanned
+    /// * `within_days` - Expiry look-ahead window in days
+    ///
+    /// # Returns
+    /// A `Vec<ExpiringVaccination>` ordered by iteration over the vet index.
+    pub fn get_expiring_vaccinations_by_vet(
+        env: Env,
+        vet_address: Address,
+        within_days: u64,
+    ) -> Vec<ExpiringVaccination> {
+        let now = env.ledger().timestamp();
+        let window_end = now.saturating_add(within_days.saturating_mul(86400));
+
+        // Use VetVaccinationIndex for O(vet_vaccinations) — no nested pet scan.
+        let vet_vax_count: u64 = env
+            .storage()
+            .instance()
+            .get::<VetKey, u64>(&VetKey::VetVaccinationCount(vet_address.clone()))
+            .unwrap_or(0);
+
+        let mut result = Vec::new(&env);
+
+        for i in 1..=vet_vax_count {
+            if let Some(vaccine_id) = env
+                .storage()
+                .instance()
+                .get::<VetKey, u64>(&VetKey::VetVaccinationIndex((vet_address.clone(), i)))
+            {
+                if let Some(vax) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, Vaccination>(&MedicalKey::Vaccination(vaccine_id))
+                {
+                    let exp = vax.expires_at;
+                    let already_expired = exp < now;
+                    let within_window = exp <= window_end;
+                    if already_expired || within_window {
+                        let days_remaining = if already_expired {
+                            0
+                        } else {
+                            (exp.saturating_sub(now)) / 86400
+                        };
+                        result.push_back(ExpiringVaccination {
+                            vaccine_id: vax.id,
+                            vaccine_type: vax.vaccine_type,
+                            expires_at: exp,
+                            days_remaining,
+                            already_expired,
+                        });
+                    }
+                }
+            }
+        }
+        result
+    }
+
     /// Internal helper: emit `VaccinationExpiringSoon` for any vaccination on
     /// `pet_id` that expires within `within_days` days (lazy, called on writes).
     fn check_and_emit_expiry_events(env: Env, pet_id: u64, within_days: u64) {
@@ -7213,7 +7293,8 @@ impl KoraContract {
 
     pub fn get_vaccination_summary(env: Env, pet_id: u64) -> VaccinationSummary {
         let overdue_types = KoraContract::get_overdue_vaccinations(env.clone(), pet_id);
-        let upcoming = KoraContract::get_upcoming_vaccinations(env.clone(), pet_id, 30);
+        // Pass Some(30) explicitly to use the default 30-day window (issue #90).
+        let upcoming = KoraContract::get_upcoming_vaccinations(env.clone(), pet_id, Some(30));
 
         VaccinationSummary {
             is_fully_current: overdue_types.is_empty(),
@@ -7320,14 +7401,20 @@ impl KoraContract {
 
     /// Verify if a certificate hash matches the anchored hash for a vaccination.
     ///
+    /// Returns `true` only when both conditions hold:
+    /// 1. The provided hash matches the stored anchor hash.
+    /// 2. The anchor timestamp is not in the future (`anchor_time <= ledger_now`),
+    ///    which ensures certificates anchored in the same ledger block verify correctly
+    ///    instead of returning `false` due to a strict `<` comparison.
+    ///
     /// # Arguments
     /// * `pet_id` - The ID of the pet
     /// * `vaccination_id` - The ID of the vaccination
     /// * `cert_hash` - Hash to verify against the anchored hash
     ///
     /// # Returns
-    /// * `true` if the hash matches the anchored certificate
-    /// * `false` if no certificate is anchored or hash doesn't match
+    /// * `true` if the hash matches and anchor timestamp is valid (anchor_time <= ledger_now)
+    /// * `false` if no certificate is anchored, hash doesn't match, or anchor is from the future
     pub fn verify_certificate(
         env: Env,
         pet_id: u64,
@@ -7341,7 +7428,10 @@ impl KoraContract {
             .instance()
             .get::<MedicalKey, CertificateAnchor>(&anchor_key)
         {
-            anchor.cert_hash == cert_hash
+            let ledger_now = env.ledger().timestamp();
+            // Fix (#89): use <= so a certificate anchored in the same ledger block
+            // is immediately verifiable instead of being rejected.
+            anchor.cert_hash == cert_hash && anchor.anchored_at <= ledger_now
         } else {
             false
         }
