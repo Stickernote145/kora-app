@@ -1,71 +1,40 @@
-# ── Rust / Cargo ──────────────────────────────────────────────────────────────
+# Build artifacts
 target/
 stellar-contracts/target/
+
+# Cargo lock files (workspace-level kept, sub-crate excluded)
 stellar-contracts/Cargo.lock
-**/*.rs.bk
-**/*.rs.orig
 
-# ── Soroban / Stellar toolchain ───────────────────────────────────────────────
-.snfoundry_cache/
-.soroban/
-*.wasm
-
-# ── Soroban / Cargo test snapshots ────────────────────────────────────────────
+# Test snapshots (proptest / insta)
 test_snapshots/
 **/test_snapshots/
+**/*.snap
+**/*.snap.new
 
-# ── Node.js / Hardhat (celo-contracts) ────────────────────────────────────────
-node_modules/
-celo-contracts/node_modules/
-celo-contracts/artifacts/
-celo-contracts/cache/
-celo-contracts/typechain-types/
-celo-contracts/coverage/
-celo-contracts/coverage.json
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnp/
-.pnp.js
-
-# ── Environment & secrets ─────────────────────────────────────────────────────
+# Environment / secrets
 .env
 .env.*
-!.env.example
 
-# ── Editor / IDE ──────────────────────────────────────────────────────────────
+# Editor and IDE files
 .vscode/
 .idea/
-*.iml
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
-.vs/
-
-# ── OS artefacts ──────────────────────────────────────────────────────────────
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-desktop.ini
-
-# ── Build / dist outputs ──────────────────────────────────────────────────────
-dist/
-build/
-out/
-*.log
-
-# ── Temporary / scratch files ─────────────────────────────────────────────────
-*.tmp
 *.swp
 *.swo
 *~
-.cache/
 
-# ── Project-specific scratch ──────────────────────────────────────────────────
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Node.js
+node_modules/
+
+# Foundry / Starknet cache
+.snfoundry_cache/
+
+# Misc generated docs / drafts
 ISSUES.md
 somzilla.md
+
+# JSON build artifacts (keep source JSON like package.json)
+*.min.json
