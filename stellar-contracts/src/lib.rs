@@ -476,6 +476,9 @@ pub struct GroomerProfile {
     pub address: Address,
     pub name: String,
     pub license_id: String,
+    /// Set by admin via `verify_groomer`. Registration alone does not grant
+    /// this — new profiles start unverified. (Issue #65)
+    pub verified: bool,
     pub aggregate_rating: u32, // Average rating multiplied by 100 for precision
     pub review_count: u64,
 }
@@ -11211,6 +11214,12 @@ impl KoraContract {
     }
 
     /// Cancel a recurring schedule. Existing slots remain; no new slots will be generated.
+    ///
+    /// Authorization (Issue #68): the caller must be the schedule's pet's
+    /// owner. There's no separate `caller` parameter — `pet.owner.require_auth()`
+    /// below both identifies and authenticates the caller in one step, so a
+    /// non-owner can never satisfy this call regardless of what address they
+    /// sign with.
     pub fn cancel_grooming_schedule(env: Env, schedule_id: u64) -> bool {
         let mut schedule: RecurringGroomingSchedule = env
             .storage()
@@ -11262,6 +11271,10 @@ impl KoraContract {
             address: address.clone(),
             name,
             license_id,
+            // New registrations always start unverified, even though only
+            // admin can register a groomer at all — verification is a
+            // distinct, separate sign-off step. (Issue #65)
+            verified: false,
             aggregate_rating: 0,
             review_count: 0,
         };
@@ -11272,6 +11285,52 @@ impl KoraContract {
         true
     }
 
+    /// Admin sign-off marking a registered groomer as verified. Unverified
+    /// groomers cannot accept bookings via `book_grooming_slot`. (Issue #65)
+    pub fn verify_groomer(env: Env, admin: Address, groomer: Address) -> bool {
+        KoraContract::require_admin_auth(&env, &admin);
+
+        let mut profile: GroomerProfile = match env
+            .storage()
+            .instance()
+            .get(&GroomingKey::Groomer(groomer.clone()))
+        {
+            Some(profile) => profile,
+            None => return false,
+        };
+
+        profile.verified = true;
+        env.storage()
+            .instance()
+            .set(&GroomingKey::Groomer(groomer), &profile);
+        true
+    }
+
+    /// Returns `true` only for a registered groomer that has also been
+    /// admin-verified via `verify_groomer`. (Issue #65)
+    pub fn is_verified_groomer(env: Env, groomer: Address) -> bool {
+        env.storage()
+            .instance()
+            .get::<GroomingKey, GroomerProfile>(&GroomingKey::Groomer(groomer))
+            .map(|profile| profile.verified)
+            .unwrap_or(false)
+    }
+
+    /// Rate the groomer tied to a specific completed grooming record.
+    ///
+    /// Issue #66's two concerns are both already enforced here: the score is
+    /// bounds-checked to 1-5 immediately below, and the rating is scoped to
+    /// a real `grooming_record_id` whose `pet_id` must match the
+    /// authenticated pet owner — so a reviewer can't rate a groomer without
+    /// an actual booking record tying them together.
+    ///
+    /// Separate, pre-existing gap (not part of #66): every current
+    /// `GroomingRecord` constructor (`create_grooming_schedule`,
+    /// `advance_schedule`) hardcodes `groomer_address: None`, so the
+    /// success branch below — which only updates a `GroomerProfile` when
+    /// `record.groomer_address` is `Some(_)` — is unreachable via any
+    /// public entrypoint today. Left as-is; this is a data-plumbing gap in
+    /// the scheduling side, not a rate_groomer authorization/validation bug.
     pub fn rate_groomer(env: Env, pet_id: u64, grooming_record_id: u64, score: u32) -> bool {
         if !(1..=5).contains(&score) {
             panic_with_error!(env, ContractError::InvalidRating);
@@ -11347,13 +11406,15 @@ impl KoraContract {
             panic_with_error!(env, ContractError::NotPetOwner);
         }
 
-        // Verify groomer is registered
-        if !env
+        // Verify groomer is registered, and admin-verified. (Issue #65:
+        // registration alone does not make a groomer bookable.)
+        let groomer_profile: GroomerProfile = env
             .storage()
             .instance()
-            .has(&GroomingKey::Groomer(groomer_id.clone()))
-        {
-            panic_with_error!(env, ContractError::InvalidInput);
+            .get(&GroomingKey::Groomer(groomer_id.clone()))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::InvalidInput));
+        if !groomer_profile.verified {
+            panic_with_error!(env, ContractError::GroomerNotVerified);
         }
 
         // Load existing slots for this groomer and check for conflicts
