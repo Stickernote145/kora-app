@@ -1,36 +1,40 @@
-target
-.snfoundry_cache/
+# Build artifacts
+target/
 stellar-contracts/target/
+
+# Cargo lock files (workspace-level kept, sub-crate excluded)
 stellar-contracts/Cargo.lock
-test_snapshots/test/test
-ISSUES.md
-node_modules
-.env
-somzilla.md
 
-# Test snapshots
+# Test snapshots (proptest / insta)
 test_snapshots/
-**/.test_snapshots/
-*.snap
-*.snap.new
+**/test_snapshots/
+**/*.snap
+**/*.snap.new
 
-# IDE / editor artifacts
-.idea/
+# Environment / secrets
+.env
+.env.*
+
+# Editor and IDE files
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
 
-# OS artifacts
+# OS metadata
 .DS_Store
 Thumbs.db
 
-# Coverage reports
-coverage/
-lcov.info
-*.profraw
-cobertura.xml
+# Node.js
+node_modules/
 
-# Wasm build artifacts (large binary, reproducibly built in CI)
-*.wasm
-*.optimized.wasm
+# Foundry / Starknet cache
+.snfoundry_cache/
+
+# Misc generated docs / drafts
+ISSUES.md
+somzilla.md
+
+# JSON build artifacts (keep source JSON like package.json)
+*.min.json
