@@ -6191,6 +6191,10 @@ impl KoraContract {
     const MAX_VET_LICENSE_LEN: u32 = 50;
     #[allow(dead_code)]
     const MAX_VET_SPEC_LEN: u32 = 100;
+    /// Maximum byte length of a QR-tag message set by the pet owner.
+    /// Enforced in `update_tag_message` to bound on-chain storage. (Issue #82)
+    #[allow(dead_code)]
+    const MAX_TAG_MESSAGE_LEN: u32 = 256;
 
     /// Maximum byte length of a vet-review comment.
     /// Enforced in `add_vet_review` to bound on-chain storage and gas costs.
@@ -8077,13 +8081,30 @@ impl KoraContract {
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
         pet.owner.require_auth();
 
-        if env
+        // If this pet already has a linked tag, unlink it first so neither
+        // the old `TagKey::Tag` entry nor the old `TagKey::PetTagId` entry
+        // remain as stale reverse-/forward-mapping ghosts. (Issue #84)
+        if let Some(old_tag_id) = env
             .storage()
             .instance()
             .get::<TagKey, BytesN<32>>(&TagKey::PetTagId(pet_id))
-            .is_some()
         {
-            panic_with_error!(&env, ContractError::PetAlreadyHasLinkedTag);
+            // Retrieve the old PetTag to find its pet_id (defensive: it should
+            // match pet_id, but clean up regardless).
+            if let Some(old_tag) = env
+                .storage()
+                .instance()
+                .get::<TagKey, PetTag>(&TagKey::Tag(old_tag_id.clone()))
+            {
+                if old_tag.pet_id != 0 {
+                    env.storage()
+                        .instance()
+                        .remove(&TagKey::PetTagId(old_tag.pet_id));
+                }
+            }
+            env.storage()
+                .instance()
+                .remove(&TagKey::Tag(old_tag_id));
         }
 
         let tag_id = KoraContract::generate_tag_id(&env, pet_id, &pet.owner);
@@ -8166,6 +8187,10 @@ impl KoraContract {
                 .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
             pet.owner.require_auth();
 
+            if Self::validate_len("new_message", &message, Self::MAX_TAG_MESSAGE_LEN).is_err() {
+                panic_with_error!(&env, ContractError::InputStringTooLong);
+            }
+
             tag.message = message;
             tag.updated_at = env.ledger().timestamp();
 
@@ -8176,7 +8201,7 @@ impl KoraContract {
         }
     }
 
-    pub fn deactivate_tag(env: Env, tag_id: BytesN<32>) -> bool {
+    pub fn deactivate_tag(env: Env, caller: Address, tag_id: BytesN<32>) -> bool {
         if let Some(mut tag) = env
             .storage()
             .instance()
@@ -8187,7 +8212,10 @@ impl KoraContract {
                 .instance()
                 .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))
                 .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
-            pet.owner.require_auth();
+            if caller != pet.owner {
+                panic_with_error!(&env, ContractError::Unauthorized);
+            }
+            caller.require_auth();
 
             tag.is_active = false;
             tag.updated_at = env.ledger().timestamp();
@@ -8200,7 +8228,7 @@ impl KoraContract {
                 TagDeactivatedEvent {
                     tag_id,
                     pet_id: tag.pet_id,
-                    deactivated_by: pet.owner,
+                    deactivated_by: caller,
                     timestamp: env.ledger().timestamp(),
                 },
             );
@@ -8210,7 +8238,7 @@ impl KoraContract {
         }
     }
 
-    pub fn reactivate_tag(env: Env, tag_id: BytesN<32>) -> bool {
+    pub fn reactivate_tag(env: Env, caller: Address, tag_id: BytesN<32>) -> bool {
         if let Some(mut tag) = env
             .storage()
             .instance()
@@ -8221,7 +8249,10 @@ impl KoraContract {
                 .instance()
                 .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))
                 .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
-            pet.owner.require_auth();
+            if caller != pet.owner {
+                panic_with_error!(&env, ContractError::Unauthorized);
+            }
+            caller.require_auth();
 
             tag.is_active = true;
             tag.updated_at = env.ledger().timestamp();
@@ -8234,7 +8265,7 @@ impl KoraContract {
                 TagReactivatedEvent {
                     tag_id,
                     pet_id: tag.pet_id,
-                    reactivated_by: pet.owner,
+                    reactivated_by: caller,
                     timestamp: env.ledger().timestamp(),
                 },
             );
@@ -8244,15 +8275,15 @@ impl KoraContract {
         }
     }
 
-    pub fn is_tag_active(env: Env, tag_id: BytesN<32>) -> bool {
+    pub fn is_tag_active(env: Env, tag_id: BytesN<32>) -> Option<bool> {
         if let Some(tag) = env
             .storage()
             .instance()
             .get::<TagKey, PetTag>(&TagKey::Tag(tag_id))
         {
-            tag.is_active
+            Some(tag.is_active)
         } else {
-            false
+            None
         }
     }
 

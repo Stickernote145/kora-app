@@ -7,3 +7,35 @@ ISSUES.md
 node_modules
 .env
 somzilla.md
+
+# Rust build artifacts
+target/
+
+# Test snapshots
+**/__snapshots__/
+*.snap
+
+# Cargo lock for contracts (optional to commit)
+# Cargo.lock
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node
+node_modules/
+
+# Hardhat
+cache/
+artifacts/
+
+# OS
+.DS_Store
+Thumbs.db
