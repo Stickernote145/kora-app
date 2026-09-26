@@ -205,6 +205,8 @@ mod test_disputes;
 mod test_grooming;
 #[cfg(test)]
 mod test_emergency_notify_rate_limit;
+#[cfg(test)]
+mod test_issues_100_101_102_103;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -261,6 +263,14 @@ const STREAK_MILESTONE_DAYS: &[u64] = &[7, 30, 100, 365, 1000];
 
 // --- STORAGE QUOTA CONSTANTS ---
 const DEFAULT_STORAGE_QUOTA: u64 = 1000; // Default max storage entries per pet
+
+/// Minimum retention period enforced by set_retention_period (Issue #102).
+///
+/// Veterinary licensing boards mandate medical record retention for a minimum
+/// of 3 to 7 years. Setting retention to 0 (or any value below this floor)
+/// would expose clinics to legal non-compliance. 365 days (1 year) is the
+/// statutory minimum floor enforced here.
+const MIN_RETENTION_DAYS: u64 = 365;
 
 // --- INPUT VALIDATION MIDDLEWARE ---
 
@@ -2355,6 +2365,19 @@ pub struct MedicalRecordPurgedEvent {
 pub struct PurgeResult {
     pub deleted: Vec<u64>,
     pub dry_run: bool,
+}
+
+/// Emitted when a veterinarian updates the clinical notes on a medical record.
+/// Contains SHA-256 hash references of the previous and updated note content
+/// for tamper-evident audit trails (Issue #100).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordNotesUpdatedEvent {
+    pub version: u32,
+    pub record_id: u64,
+    pub old_notes_hash: BytesN<32>,
+    pub new_notes_hash: BytesN<32>,
+    pub timestamp: u64,
 }
 
 // --- VET LICENSE VERIFICATION EVENTS ---
@@ -9485,6 +9508,16 @@ impl KoraContract {
         metadata: AttachmentMetadata,
         content_hash: BytesN<32>,
     ) -> bool {
+        // Issue #103: Verify the medical record exists before doing any work.
+        // Orphaned attachments against non-existent record IDs pollute storage.
+        if !env
+            .storage()
+            .instance()
+            .has(&MedicalKey::MedicalRecord(record_id))
+        {
+            panic_with_error!(&env, ContractError::RecordNotFound);
+        }
+
         // Validate the IPFS hash format up-front.
         let len = ipfs_hash.len() as usize;
         if len > 128 {
@@ -12632,6 +12665,12 @@ impl KoraContract {
         if !Self::is_admin_address(&env, &admin) {
             panic_with_error!(&env, ContractError::NotAnAdmin);
         }
+        // Enforce minimum statutory retention floor (Issue #102).
+        // MIN_RETENTION_DAYS * 86_400 seconds/day.
+        let min_seconds: u64 = MIN_RETENTION_DAYS * 86_400;
+        if period_seconds < min_seconds {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
         env.storage()
             .instance()
             .set(&MedicalKey::RetentionPeriod, &period_seconds);
@@ -12756,6 +12795,42 @@ impl KoraContract {
         }
 
         if !dry_run && !deleted.is_empty() {
+            // --- Issue #101: compact the per-pet index so paginated queries
+            // remain dense and contiguous after purging expired records. ---
+            //
+            // Re-walk all index slots, collect the surviving record IDs in
+            // order, remove every old index entry, and then write a fresh
+            // contiguous index from slot 1..=surviving.len().  Finally update
+            // PetMedicalRecordCount to the compacted length.
+            let mut surviving: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
+            for i in 1..=record_count {
+                if let Some(rid) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+                {
+                    // Remove every existing index slot (both purged and kept).
+                    env.storage()
+                        .instance()
+                        .remove(&MedicalKey::PetMedicalRecordIndex((pet_id, i)));
+                    if !deleted.contains(&rid) {
+                        surviving.push_back(rid);
+                    }
+                }
+            }
+            // Write fresh contiguous index.
+            for (idx, rid) in surviving.iter().enumerate() {
+                env.storage().instance().set(
+                    &MedicalKey::PetMedicalRecordIndex((pet_id, idx as u64 + 1)),
+                    &rid,
+                );
+            }
+            // Update the count to the compacted length.
+            let new_count = surviving.len() as u64;
+            env.storage()
+                .instance()
+                .set(&MedicalKey::PetMedicalRecordCount(pet_id), &new_count);
+
             if Self::is_admin_address(&env, &caller) {
                 Self::record_admin_activity(&env, &caller, "purge_deleted_records");
             }
@@ -13286,6 +13361,32 @@ impl KoraContract {
     pub fn update_medical_record_notes(env: Env, record_id: u64, notes: String) -> bool {
         if let Some(mut record) = Self::load_medical_record(&env, record_id) {
             record.vet_address.require_auth();
+
+            // Hash the old and new notes for the audit event (Issue #100).
+            let old_notes_hash: BytesN<32> = {
+                let mut preimage = soroban_sdk::Bytes::new(&env);
+                let old_len = record.notes.len() as usize;
+                let mut buf = [0u8; 4096];
+                let buf_len = old_len.min(buf.len());
+                record.notes.copy_into_slice(&mut buf[..buf_len]);
+                for b in buf.iter().take(buf_len) {
+                    preimage.push_back(*b);
+                }
+                env.crypto().sha256(&preimage).into()
+            };
+
+            let new_notes_hash: BytesN<32> = {
+                let mut preimage = soroban_sdk::Bytes::new(&env);
+                let new_len = notes.len() as usize;
+                let mut buf = [0u8; 4096];
+                let buf_len = new_len.min(buf.len());
+                notes.copy_into_slice(&mut buf[..buf_len]);
+                for b in buf.iter().take(buf_len) {
+                    preimage.push_back(*b);
+                }
+                env.crypto().sha256(&preimage).into()
+            };
+
             record.notes = notes;
             record.updated_at = env.ledger().timestamp();
             Self::store_medical_record(&env, record_id, &record);
