@@ -1817,6 +1817,9 @@ pub struct CustodyEntry {
     pub to: Address,
     pub timestamp: u64,
     pub transfer_type: TransferType,
+    /// Physical condition of the animal at the time of transfer (e.g. "healthy",
+    /// "injured – treated", "malnourished"). `None` when not recorded.
+    pub condition_notes: Option<String>,
 }
 
 /// Result of [`KoraContract::verify_custody_chain`].
@@ -5936,6 +5939,7 @@ impl KoraContract {
                 old_owner.clone(),
                 pet.owner.clone(),
                 TransferType::Direct,
+                None,
             );
 
             env.events().publish(
@@ -5951,7 +5955,18 @@ impl KoraContract {
         }
     }
 
-    pub fn accept_pet_transfer(env: Env, id: u64) {
+    /// Accept a pending ownership transfer.
+    ///
+    /// `transfer_type` describes why custody is changing (e.g. `Direct`,
+    /// `Adoption`, `Multisig`). `condition_notes` records the physical
+    /// condition of the animal at intake (e.g. `"healthy"`, `"injured –
+    /// treated"`); pass `None` when not applicable.
+    pub fn accept_pet_transfer(
+        env: Env,
+        id: u64,
+        transfer_type: TransferType,
+        condition_notes: Option<String>,
+    ) {
         if let Some(mut pet) = env
             .storage()
             .instance()
@@ -5982,7 +5997,8 @@ impl KoraContract {
                 id,
                 old_owner.clone(),
                 pet.owner.clone(),
-                TransferType::Direct,
+                transfer_type,
+                condition_notes,
             );
 
             env.events().publish(
@@ -8833,12 +8849,17 @@ impl KoraContract {
     }
 
     /// Append a [`CustodyEntry`] to the chain-of-custody log for `pet_id`.
+    ///
+    /// `condition_notes` captures the physical condition of the animal at the
+    /// time of transfer (e.g. `"healthy"`, `"injured – treated"`). Pass `None`
+    /// when the condition is not recorded.
     fn append_custody_entry(
         env: &Env,
         pet_id: u64,
         from: Address,
         to: Address,
         transfer_type: TransferType,
+        condition_notes: Option<String>,
     ) {
         let mut chain: Vec<CustodyEntry> = env
             .storage()
@@ -8850,6 +8871,7 @@ impl KoraContract {
             to,
             timestamp: env.ledger().timestamp(),
             transfer_type,
+            condition_notes,
         });
         env.storage()
             .instance()
