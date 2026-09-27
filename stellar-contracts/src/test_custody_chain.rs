@@ -267,3 +267,111 @@ fn verify_custody_chain_detects_current_owner_mismatch() {
     assert!(!result.valid);
     assert_eq!(result.gap_at, Some(1));
 }
+
+// -------------------------------------------------------
+// Issue #109 – same-ledger timestamp validation in verify_custody_chain
+// -------------------------------------------------------
+
+/// Two custody entries sharing an identical block timestamp (same-ledger
+/// transfer, e.g. shelter intake and immediate foster placement) must pass
+/// verification.
+#[test]
+fn verify_custody_chain_allows_same_ledger_timestamps() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, KoraContract);
+    let client = KoraContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    env.mock_all_auths();
+    client.init_admin(&owner);
+    let pet_id = register_pet(&client, &env, &owner);
+
+    // First transfer: owner -> a
+    client.transfer_pet_ownership(&pet_id, &a, &0);
+    client.accept_pet_transfer(&pet_id);
+
+    // Second transfer: a -> b — freeze the clock so both entries share the
+    // same block timestamp, simulating two transfers in the same ledger.
+    client.transfer_pet_ownership(&pet_id, &b, &0);
+    client.accept_pet_transfer(&pet_id);
+
+    // Forcibly set both entries to the same timestamp via storage injection.
+    let mut chain = client.get_custody_chain(&pet_id);
+    assert_eq!(chain.len(), 2);
+    let ts = chain.get(0).unwrap().timestamp;
+    let mut second = chain.get(1).unwrap();
+    second.timestamp = ts; // same-ledger: equal timestamps
+    chain.set(1, second);
+    set_custody_chain(&env, &contract_id, &pet_id, &chain);
+
+    let result = client.verify_custody_chain(&pet_id);
+    assert!(result.valid, "same-ledger equal timestamps must be valid");
+    assert_eq!(result.gap_at, None);
+}
+
+/// An entry whose timestamp is strictly less than the previous entry's
+/// timestamp (retroactive / forged entry) must be rejected.
+#[test]
+fn verify_custody_chain_rejects_retroactive_timestamp() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, KoraContract);
+    let client = KoraContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    env.mock_all_auths();
+    client.init_admin(&owner);
+    let pet_id = register_pet(&client, &env, &owner);
+
+    client.transfer_pet_ownership(&pet_id, &a, &0);
+    client.accept_pet_transfer(&pet_id);
+
+    client.transfer_pet_ownership(&pet_id, &b, &0);
+    client.accept_pet_transfer(&pet_id);
+
+    // Inject a retroactive timestamp: entry 1's timestamp is earlier than
+    // entry 0's, simulating a forged / out-of-order custody record.
+    let mut chain = client.get_custody_chain(&pet_id);
+    assert_eq!(chain.len(), 2);
+    let first_ts = chain.get(0).unwrap().timestamp;
+    let mut second = chain.get(1).unwrap();
+    // Subtract 1 to make the second entry appear before the first.
+    second.timestamp = first_ts.saturating_sub(1);
+    chain.set(1, second);
+    set_custody_chain(&env, &contract_id, &pet_id, &chain);
+
+    let result = client.verify_custody_chain(&pet_id);
+    assert!(!result.valid, "retroactive timestamp must be invalid");
+    assert_eq!(result.gap_at, Some(1));
+}
+
+/// A chain with strictly increasing timestamps (normal case across different
+/// ledger blocks) must remain valid after the fix.
+#[test]
+fn verify_custody_chain_valid_with_increasing_timestamps() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, KoraContract);
+    let client = KoraContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    env.mock_all_auths();
+    client.init_admin(&owner);
+    let pet_id = register_pet(&client, &env, &owner);
+
+    // First transfer at the default timestamp.
+    client.transfer_pet_ownership(&pet_id, &a, &0);
+    client.accept_pet_transfer(&pet_id);
+
+    // Advance the ledger clock by 1 second before the second transfer to
+    // produce strictly increasing timestamps.
+    env.ledger().with_mut(|l| l.timestamp += 1);
+
+    client.transfer_pet_ownership(&pet_id, &b, &0);
+    client.accept_pet_transfer(&pet_id);
+
+    let result = client.verify_custody_chain(&pet_id);
+    assert!(result.valid, "increasing timestamps must be valid");
+    assert_eq!(result.gap_at, None);
+}
