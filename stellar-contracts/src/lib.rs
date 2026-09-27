@@ -207,6 +207,8 @@ mod test_grooming;
 mod test_emergency_notify_rate_limit;
 #[cfg(test)]
 mod test_issues_100_101_102_103;
+#[cfg(test)]
+mod test_ownership_history_privacy;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -9755,10 +9757,31 @@ impl KoraContract {
 
         // The creator is the pet's registered owner at the first ownership
         // record (previous_owner == new_owner at registration), independent
-        // of the custody chain itself.
-        let creator = Self::get_ownership_history(env.clone(), pet_id, 0, 1)
-            .get(0)
-            .map(|record| record.previous_owner);
+        // of the custody chain itself. We read directly from storage here to
+        // bypass the caller-auth check in the public get_ownership_history API
+        // (this is an internal read, not a user-initiated call).
+        let creator = {
+            let count: u64 = env
+                .storage()
+                .instance()
+                .get(&SystemKey::PetOwnershipRecordCount(pet_id))
+                .unwrap_or(0);
+            if count == 0 {
+                None
+            } else {
+                env.storage()
+                    .instance()
+                    .get::<SystemKey, u64>(&SystemKey::PetOwnershipRecordIndex((pet_id, 1)))
+                    .and_then(|record_id| {
+                        env.storage()
+                            .instance()
+                            .get::<SystemKey, OwnershipRecord>(
+                                &SystemKey::PetOwnershipRecord(record_id),
+                            )
+                    })
+                    .map(|record| record.previous_owner)
+            }
+        };
 
         let first = chain.get(0).unwrap();
         if Some(first.from.clone()) != creator {
@@ -9798,12 +9821,46 @@ impl KoraContract {
         }
     }
 
+    /// Return the paginated ownership history for `pet_id`.
+    ///
+    /// # Access control
+    ///
+    /// When the pet's `privacy_level` is [`PrivacyLevel::Private`] only the
+    /// current owner and registered admins may view prior owner addresses.
+    /// Any other caller (including unauthenticated / anonymous callers) will
+    /// cause this function to panic with [`ContractError::Unauthorized`].
+    ///
+    /// For [`PrivacyLevel::Public`] and [`PrivacyLevel::Restricted`] pets the
+    /// records are returned to any caller without restriction, preserving the
+    /// existing behaviour for non-private pets.
+    ///
+    /// The `caller` parameter must be the address that is authorising this
+    /// call; it is required and validated when `privacy_level == Private`.
     pub fn get_ownership_history(
         env: Env,
         pet_id: u64,
+        caller: Address,
         offset: u64,
         limit: u32,
     ) -> Vec<OwnershipRecord> {
+        // Load the pet to inspect its privacy level and current owner.
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        // For private pets, only the current owner or an admin may view the
+        // full history. Require auth and verify identity before proceeding.
+        if pet.privacy_level == PrivacyLevel::Private {
+            caller.require_auth();
+            let is_owner = caller == pet.owner;
+            let is_admin = Self::is_admin_address(&env, &caller);
+            if !is_owner && !is_admin {
+                panic_with_error!(&env, ContractError::Unauthorized);
+            }
+        }
+
         let count: u64 = env
             .storage()
             .instance()
