@@ -101,6 +101,18 @@ describe("KoraRegistry", function () {
       const ids = await registry.getPetRecordsByDateRange(petId, t2 + 1000, t2 + 2000);
       expect(ids.length).to.equal(0);
     });
+
+    it("bounds results when limit parameter is provided", async function () {
+      const ids = await registry["getPetRecordsByDateRange(uint256,uint256,uint256,uint256)"](petId, 0, t2, 2);
+      expect(ids.length).to.equal(2);
+      expect(ids[0]).to.equal(1);
+      expect(ids[1]).to.equal(2);
+    });
+
+    it("returns empty array when limit is 0", async function () {
+      const ids = await registry["getPetRecordsByDateRange(uint256,uint256,uint256,uint256)"](petId, 0, t2, 0);
+      expect(ids.length).to.equal(0);
+    });
   });
 
   // Issue #924 — core flows & access-control revert paths
@@ -911,5 +923,49 @@ describe("KoraRegistry", function () {
   });
 
   // ---------------------------------------------------------------------------
+  // Wave 9 Issue #120 (#125) — Bound loop iterations in getPetRecordsByDateRange
+  // ---------------------------------------------------------------------------
+  describe("Wave 9 Issue #120 (#125) — Bound loop iterations in getPetRecordsByDateRange", function () {
+    let petId;
+
+    beforeEach(async function () {
+      petId = await registerPet();
+      for (let i = 0; i < 10; i++) {
+        await registry.connect(vet).addMedicalRecord(petId, 0, `diag ${i}`, `treat ${i}`, "");
+      }
+    });
+
+    it("accepts a limit parameter and caps returned record count", async function () {
+      const limit = 4;
+      const ids = await registry["getPetRecordsByDateRange(uint256,uint256,uint256,uint256)"](
+        petId, 0, 9999999999, limit
+      );
+      expect(ids.length).to.equal(4);
+    });
+
+    it("returns empty array when limit is 0", async function () {
+      const ids = await registry["getPetRecordsByDateRange(uint256,uint256,uint256,uint256)"](
+        petId, 0, 9999999999, 0
+      );
+      expect(ids.length).to.equal(0);
+    });
+
+    it("returns all records if total matching is less than limit", async function () {
+      const ids = await registry["getPetRecordsByDateRange(uint256,uint256,uint256,uint256)"](
+        petId, 0, 9999999999, 50
+      );
+      expect(ids.length).to.equal(10);
+    });
+
+    it("legacy 3-argument call defaults to MAX_QUERY_LIMIT bound", async function () {
+      const ids = await registry["getPetRecordsByDateRange(uint256,uint256,uint256)"](
+        petId, 0, 9999999999
+      );
+      expect(ids.length).to.equal(10);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Issue #920 — correctMedicalRecord
   // ---------------------------------------------------------------------------
+});
