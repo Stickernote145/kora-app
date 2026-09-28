@@ -244,6 +244,8 @@ contract KoraRegistry is Pausable {
     /// @param specialization Area of specialization.
     function registerVet(string calldata licenseNumber, string calldata specialization) external whenNotPaused {
         require(bytes(licenseNumber).length > 0, "KoraRegistry: empty licenseNumber");
+        require(bytes(licenseNumber).length <= 64, "KoraRegistry: invalid license length");
+        require(bytes(specialization).length <= 128, "KoraRegistry: invalid specialization length");
 
         bytes32 key = _normalizeLicenseKey(licenseNumber);
         address existingHolder = _licenseToVet[key];
@@ -294,6 +296,7 @@ contract KoraRegistry is Pausable {
     /// @param specialization New specialization string.
     function updateSpecialization(string calldata specialization) external whenNotPaused {
         require(vets[msg.sender].vetAddress == msg.sender, "KoraRegistry: not a registered vet");
+        require(bytes(specialization).length <= 128, "KoraRegistry: invalid specialization length");
         vets[msg.sender].specialization = specialization;
         emit VetSpecializationUpdated(msg.sender, specialization);
     }
@@ -504,12 +507,13 @@ contract KoraRegistry is Pausable {
         string calldata treatment,
         string calldata notes
     ) external whenNotPaused {
+        require(recordId > 0 && recordId <= _recordCounter, "KoraRegistry: record does not exist");
         uint256 petId = _recordPet[recordId];
         MedicalRecord storage rec = _petRecords[petId][_recordIndex[recordId]];
         require(rec.recordId == recordId, "KoraRegistry: record not found");
         require(
             msg.sender == rec.vet || msg.sender == admin,
-            "KoraRegistry: not authorized"
+            "KoraRegistry: not authorised to correct record"
         );
         require(bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
             "KoraRegistry: invalid diagnosis length");
