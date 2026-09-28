@@ -437,6 +437,7 @@ contract KoraRegistry is Pausable {
         string calldata treatment,
         string calldata notes
     ) external onlyVerifiedVet whenNotPaused returns (uint256 recordId) {
+        require(pets[petId].owner != address(0), "KoraRegistry: pet does not exist");
         require(pets[petId].active, "KoraRegistry: pet inactive");
         require(bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
             "KoraRegistry: invalid diagnosis length");
@@ -504,12 +505,13 @@ contract KoraRegistry is Pausable {
         string calldata treatment,
         string calldata notes
     ) external whenNotPaused {
+        require(recordId > 0 && recordId <= _recordCounter, "KoraRegistry: record does not exist");
         uint256 petId = _recordPet[recordId];
         MedicalRecord storage rec = _petRecords[petId][_recordIndex[recordId]];
         require(rec.recordId == recordId, "KoraRegistry: record not found");
         require(
             msg.sender == rec.vet || msg.sender == admin,
-            "KoraRegistry: not authorized"
+            "KoraRegistry: not authorised to correct record"
         );
         require(bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
             "KoraRegistry: invalid diagnosis length");
