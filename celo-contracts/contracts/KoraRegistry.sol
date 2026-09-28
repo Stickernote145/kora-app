@@ -244,6 +244,8 @@ contract KoraRegistry is Pausable {
     /// @param specialization Area of specialization.
     function registerVet(string calldata licenseNumber, string calldata specialization) external whenNotPaused {
         require(bytes(licenseNumber).length > 0, "KoraRegistry: empty licenseNumber");
+        require(bytes(licenseNumber).length <= MAX_SHORT_LEN, "KoraRegistry: licenseNumber too long");
+        require(bytes(specialization).length <= MAX_LONG_LEN,  "KoraRegistry: specialization too long");
 
         bytes32 key = _normalizeLicenseKey(licenseNumber);
         address existingHolder = _licenseToVet[key];
