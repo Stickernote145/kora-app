@@ -233,6 +233,50 @@ describe("KoraRegistry", function () {
       await expect(registry.connect(vet).addMedicalRecord(petId, 0, "flu", "rest", ""))
         .to.be.revertedWith("KoraRegistry: pet inactive");
     });
+
+    it("reverts adding a record for a non-existent pet", async function () {
+      await expect(registry.connect(vet).addMedicalRecord(999999, 0, "flu", "rest", ""))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Wave 9 Issue #119 (#124) — Prevent orphan medical records
+  // ---------------------------------------------------------------------------
+  describe("Wave 9 Issue #119 (#124) — Prevent orphan medical records", function () {
+    it("reverts with 'KoraRegistry: pet does not exist' when petId does not exist", async function () {
+      await expect(
+        registry.connect(vet).addMedicalRecord(999999, 0, "routine checkup", "all good", "healthy")
+      ).to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+
+    it("reverts when adding record to deactivated pet", async function () {
+      const petId = await registerPet();
+      await registry.connect(owner).deactivatePet(petId);
+      await expect(
+        registry.connect(vet).addMedicalRecord(petId, 0, "routine checkup", "all good", "healthy")
+      ).to.be.revertedWith("KoraRegistry: pet inactive");
+    });
+
+    it("successfully creates and links medical record for existing active pet", async function () {
+      const petId = await registerPet();
+      const tx = await registry.connect(vet).addMedicalRecord(
+        petId, 1, "rabies vaccination", "injected 1ml", "annual booster"
+      );
+      const receipt = await tx.wait();
+      const event = receipt.logs.find(
+        l => l.fragment && l.fragment.name === "MedicalRecordAdded"
+      );
+      expect(event).to.not.be.undefined;
+      const recordId = event.args.recordId;
+
+      const records = await registry.getPetRecords(petId);
+      expect(records.length).to.equal(1);
+      expect(records[0].recordId).to.equal(recordId);
+      expect(records[0].petId).to.equal(petId);
+      expect(records[0].diagnosis).to.equal("rabies vaccination");
+      expect(records[0].vet).to.equal(vet.address);
+    });
   });
 
   // ---------------------------------------------------------------------------
