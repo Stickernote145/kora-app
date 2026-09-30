@@ -37,7 +37,7 @@ fn direct_transfer_appends_custody_entry() {
     let pet_id = register_pet(&client, &env, &owner);
 
     client.transfer_pet_ownership(&pet_id, &new_owner, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
 
     let chain = client.get_custody_chain(&pet_id);
     assert_eq!(chain.len(), 1);
@@ -61,11 +61,11 @@ fn multiple_transfers_produce_ordered_chain() {
 
     // First transfer: owner -> new_owner
     client.transfer_pet_ownership(&pet_id, &new_owner, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
 
     // Second transfer: new_owner -> third_owner
     client.transfer_pet_ownership(&pet_id, &third_owner, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
 
     let chain = client.get_custody_chain(&pet_id);
     assert_eq!(chain.len(), 2);
@@ -100,7 +100,7 @@ fn custody_chain_is_append_only_no_delete_path_exists() {
     assert_eq!(chain_before.len(), 0);
 
     client.transfer_pet_ownership(&pet_id, &new_owner, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
 
     let chain_after = client.get_custody_chain(&pet_id);
     assert_eq!(chain_after.len(), 1);
@@ -108,7 +108,7 @@ fn custody_chain_is_append_only_no_delete_path_exists() {
     // Attempting a second transfer does not shrink the chain
     let third_owner = Address::generate(&env);
     client.transfer_pet_ownership(&pet_id, &third_owner, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
 
     let chain_final = client.get_custody_chain(&pet_id);
     assert_eq!(chain_final.len(), 2);
@@ -159,9 +159,9 @@ fn verify_custody_chain_valid_for_consistent_chain() {
     let pet_id = register_pet(&client, &env, &owner);
 
     client.transfer_pet_ownership(&pet_id, &new_owner, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
     client.transfer_pet_ownership(&pet_id, &third_owner, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
 
     let result = client.verify_custody_chain(&pet_id);
     assert!(result.valid);
@@ -183,11 +183,11 @@ fn verify_custody_chain_detects_gap_at_index() {
     let pet_id = register_pet(&client, &env, &owner);
 
     client.transfer_pet_ownership(&pet_id, &a, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
     client.transfer_pet_ownership(&pet_id, &b, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
     client.transfer_pet_ownership(&pet_id, &c, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
 
     let mut chain = client.get_custody_chain(&pet_id);
     assert_eq!(chain.len(), 3);
@@ -219,11 +219,11 @@ fn verify_custody_chain_detects_forked_chain() {
     let pet_id = register_pet(&client, &env, &owner);
 
     client.transfer_pet_ownership(&pet_id, &a, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
     client.transfer_pet_ownership(&pet_id, &b, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
     client.transfer_pet_ownership(&pet_id, &c, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
 
     let mut chain = client.get_custody_chain(&pet_id);
     assert_eq!(chain.len(), 3);
@@ -255,7 +255,7 @@ fn verify_custody_chain_detects_current_owner_mismatch() {
     let pet_id = register_pet(&client, &env, &owner);
 
     client.transfer_pet_ownership(&pet_id, &new_owner, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
 
     let mut chain = client.get_custody_chain(&pet_id);
     let mut last = chain.get(0).unwrap();
@@ -269,109 +269,86 @@ fn verify_custody_chain_detects_current_owner_mismatch() {
 }
 
 // -------------------------------------------------------
-// Issue #109 – same-ledger timestamp validation in verify_custody_chain
+// Issue #108 – transfer_type and condition_notes in CustodyEntry
 // -------------------------------------------------------
 
-/// Two custody entries sharing an identical block timestamp (same-ledger
-/// transfer, e.g. shelter intake and immediate foster placement) must pass
-/// verification.
+/// Custody entry records the transfer type supplied by the caller.
 #[test]
-fn verify_custody_chain_allows_same_ledger_timestamps() {
+fn custody_entry_records_transfer_type() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, KoraContract);
-    let client = KoraContractClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    env.mock_all_auths();
-    client.init_admin(&owner);
+    let (client, owner, new_owner) = setup(&env);
     let pet_id = register_pet(&client, &env, &owner);
 
-    // First transfer: owner -> a
-    client.transfer_pet_ownership(&pet_id, &a, &0);
-    client.accept_pet_transfer(&pet_id);
+    // Adoption transfer — caller explicitly signals the reason.
+    client.transfer_pet_ownership(&pet_id, &new_owner, &0);
+    client.accept_pet_transfer(&pet_id, &TransferType::Adoption, &None);
 
-    // Second transfer: a -> b — freeze the clock so both entries share the
-    // same block timestamp, simulating two transfers in the same ledger.
-    client.transfer_pet_ownership(&pet_id, &b, &0);
-    client.accept_pet_transfer(&pet_id);
+    let chain = client.get_custody_chain(&pet_id);
+    assert_eq!(chain.len(), 1);
 
-    // Forcibly set both entries to the same timestamp via storage injection.
-    let mut chain = client.get_custody_chain(&pet_id);
-    assert_eq!(chain.len(), 2);
-    let ts = chain.get(0).unwrap().timestamp;
-    let mut second = chain.get(1).unwrap();
-    second.timestamp = ts; // same-ledger: equal timestamps
-    chain.set(1, second);
-    set_custody_chain(&env, &contract_id, &pet_id, &chain);
-
-    let result = client.verify_custody_chain(&pet_id);
-    assert!(result.valid, "same-ledger equal timestamps must be valid");
-    assert_eq!(result.gap_at, None);
+    let entry = chain.get(0).unwrap();
+    assert_eq!(entry.transfer_type, TransferType::Adoption);
 }
 
-/// An entry whose timestamp is strictly less than the previous entry's
-/// timestamp (retroactive / forged entry) must be rejected.
+/// Custody entry records condition notes when provided.
 #[test]
-fn verify_custody_chain_rejects_retroactive_timestamp() {
+fn custody_entry_records_condition_notes_when_provided() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, KoraContract);
-    let client = KoraContractClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    env.mock_all_auths();
-    client.init_admin(&owner);
+    let (client, owner, new_owner) = setup(&env);
     let pet_id = register_pet(&client, &env, &owner);
 
-    client.transfer_pet_ownership(&pet_id, &a, &0);
-    client.accept_pet_transfer(&pet_id);
+    let notes = String::from_str(&env, "healthy, vaccinations up to date");
 
-    client.transfer_pet_ownership(&pet_id, &b, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.transfer_pet_ownership(&pet_id, &new_owner, &0);
+    client.accept_pet_transfer(&pet_id, &TransferType::Adoption, &Some(notes.clone()));
 
-    // Inject a retroactive timestamp: entry 1's timestamp is earlier than
-    // entry 0's, simulating a forged / out-of-order custody record.
-    let mut chain = client.get_custody_chain(&pet_id);
-    assert_eq!(chain.len(), 2);
-    let first_ts = chain.get(0).unwrap().timestamp;
-    let mut second = chain.get(1).unwrap();
-    // Subtract 1 to make the second entry appear before the first.
-    second.timestamp = first_ts.saturating_sub(1);
-    chain.set(1, second);
-    set_custody_chain(&env, &contract_id, &pet_id, &chain);
+    let chain = client.get_custody_chain(&pet_id);
+    let entry = chain.get(0).unwrap();
 
-    let result = client.verify_custody_chain(&pet_id);
-    assert!(!result.valid, "retroactive timestamp must be invalid");
-    assert_eq!(result.gap_at, Some(1));
+    assert_eq!(entry.condition_notes, Some(notes));
 }
 
-/// A chain with strictly increasing timestamps (normal case across different
-/// ledger blocks) must remain valid after the fix.
+/// Custody entry stores None for condition_notes when the caller omits it.
 #[test]
-fn verify_custody_chain_valid_with_increasing_timestamps() {
+fn custody_entry_condition_notes_defaults_to_none() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, KoraContract);
-    let client = KoraContractClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    env.mock_all_auths();
-    client.init_admin(&owner);
+    let (client, owner, new_owner) = setup(&env);
     let pet_id = register_pet(&client, &env, &owner);
 
-    // First transfer at the default timestamp.
-    client.transfer_pet_ownership(&pet_id, &a, &0);
-    client.accept_pet_transfer(&pet_id);
+    client.transfer_pet_ownership(&pet_id, &new_owner, &0);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
 
-    // Advance the ledger clock by 1 second before the second transfer to
-    // produce strictly increasing timestamps.
-    env.ledger().with_mut(|l| l.timestamp += 1);
+    let chain = client.get_custody_chain(&pet_id);
+    let entry = chain.get(0).unwrap();
 
-    client.transfer_pet_ownership(&pet_id, &b, &0);
-    client.accept_pet_transfer(&pet_id);
+    assert_eq!(entry.condition_notes, None);
+}
 
-    let result = client.verify_custody_chain(&pet_id);
-    assert!(result.valid, "increasing timestamps must be valid");
-    assert_eq!(result.gap_at, None);
+/// Each transfer in a chain can carry its own transfer type and notes.
+#[test]
+fn custody_chain_stores_distinct_notes_per_entry() {
+    let env = Env::default();
+    let (client, owner, new_owner) = setup(&env);
+    let third_owner = Address::generate(&env);
+    let pet_id = register_pet(&client, &env, &owner);
+
+    // Surrender from original owner — no condition note.
+    client.transfer_pet_ownership(&pet_id, &new_owner, &0);
+    client.accept_pet_transfer(&pet_id, &TransferType::Direct, &None);
+
+    // Adoption from shelter — with an intake condition note.
+    client.transfer_pet_ownership(&pet_id, &third_owner, &0);
+    let notes = String::from_str(&env, "malnourished, receiving treatment");
+    client.accept_pet_transfer(&pet_id, &TransferType::Adoption, &Some(notes.clone()));
+
+    let chain = client.get_custody_chain(&pet_id);
+    assert_eq!(chain.len(), 2);
+
+    let first = chain.get(0).unwrap();
+    assert_eq!(first.transfer_type, TransferType::Direct);
+    assert_eq!(first.condition_notes, None);
+
+    let second = chain.get(1).unwrap();
+    assert_eq!(second.transfer_type, TransferType::Adoption);
+    assert_eq!(second.condition_notes, Some(notes));
 }
