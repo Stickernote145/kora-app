@@ -299,6 +299,49 @@ describe("KoraRegistry", function () {
       await expect(registry.connect(other).reactivatePet(petId))
         .to.be.revertedWith("KoraRegistry: not pet owner");
     });
+
+    it("reverts with 'KoraRegistry: pet does not exist' for a non-existent petId", async function () {
+      await expect(registry.connect(owner).reactivatePet(999999))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Wave 9 Issue #118 (#123) — Validate pet existence in deactivatePet and reactivatePet
+  // ---------------------------------------------------------------------------
+  describe("Wave 9 Issue #118 (#123) — Validate pet existence in deactivatePet and reactivatePet", function () {
+    it("deactivatePet reverts with 'KoraRegistry: pet does not exist' when petId does not exist", async function () {
+      await expect(registry.connect(owner).deactivatePet(999999))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+
+    it("reactivatePet reverts with 'KoraRegistry: pet does not exist' when petId does not exist", async function () {
+      await expect(registry.connect(owner).reactivatePet(999999))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+
+    it("initiatePetTransfer reverts with 'KoraRegistry: pet does not exist' when petId does not exist", async function () {
+      await expect(registry.connect(owner).initiatePetTransfer(999999, other.address))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+
+    it("cancelPetTransfer reverts with 'KoraRegistry: pet does not exist' when petId does not exist", async function () {
+      await expect(registry.connect(owner).cancelPetTransfer(999999))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+
+    it("existing pets deactivate and reactivate normally", async function () {
+      const petId = await registerPet();
+      await expect(registry.connect(owner).deactivatePet(petId))
+        .to.emit(registry, "PetDeactivated")
+        .withArgs(petId);
+      expect((await registry.pets(petId)).active).to.equal(false);
+
+      await expect(registry.connect(owner).reactivatePet(petId))
+        .to.emit(registry, "PetReactivated")
+        .withArgs(petId);
+      expect((await registry.pets(petId)).active).to.equal(true);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -913,3 +956,4 @@ describe("KoraRegistry", function () {
   // ---------------------------------------------------------------------------
   // Issue #920 — correctMedicalRecord
   // ---------------------------------------------------------------------------
+});
