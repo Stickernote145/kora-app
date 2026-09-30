@@ -207,6 +207,8 @@ mod test_grooming;
 mod test_emergency_notify_rate_limit;
 #[cfg(test)]
 mod test_issues_100_101_102_103;
+#[cfg(test)]
+mod test_ownership_history_privacy;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -1856,6 +1858,9 @@ pub struct CustodyEntry {
     pub to: Address,
     pub timestamp: u64,
     pub transfer_type: TransferType,
+    /// Physical condition of the animal at the time of transfer (e.g. "healthy",
+    /// "injured – treated", "malnourished"). `None` when not recorded.
+    pub condition_notes: Option<String>,
 }
 
 /// Result of [`KoraContract::verify_custody_chain`].
@@ -6369,6 +6374,7 @@ impl KoraContract {
                 old_owner.clone(),
                 pet.owner.clone(),
                 TransferType::Direct,
+                None,
             );
 
             env.events().publish(
@@ -6384,7 +6390,18 @@ impl KoraContract {
         }
     }
 
-    pub fn accept_pet_transfer(env: Env, id: u64) {
+    /// Accept a pending ownership transfer.
+    ///
+    /// `transfer_type` describes why custody is changing (e.g. `Direct`,
+    /// `Adoption`, `Multisig`). `condition_notes` records the physical
+    /// condition of the animal at intake (e.g. `"healthy"`, `"injured –
+    /// treated"`); pass `None` when not applicable.
+    pub fn accept_pet_transfer(
+        env: Env,
+        id: u64,
+        transfer_type: TransferType,
+        condition_notes: Option<String>,
+    ) {
         if let Some(mut pet) = env
             .storage()
             .instance()
@@ -6424,7 +6441,8 @@ impl KoraContract {
                 id,
                 old_owner.clone(),
                 pet.owner.clone(),
-                TransferType::Direct,
+                transfer_type,
+                condition_notes,
             );
 
             env.events().publish(
@@ -9702,12 +9720,17 @@ impl KoraContract {
     }
 
     /// Append a [`CustodyEntry`] to the chain-of-custody log for `pet_id`.
+    ///
+    /// `condition_notes` captures the physical condition of the animal at the
+    /// time of transfer (e.g. `"healthy"`, `"injured – treated"`). Pass `None`
+    /// when the condition is not recorded.
     fn append_custody_entry(
         env: &Env,
         pet_id: u64,
         from: Address,
         to: Address,
         transfer_type: TransferType,
+        condition_notes: Option<String>,
     ) {
         let mut chain: Vec<CustodyEntry> = env
             .storage()
@@ -9719,6 +9742,7 @@ impl KoraContract {
             to,
             timestamp: env.ledger().timestamp(),
             transfer_type,
+            condition_notes,
         });
         env.storage()
             .instance()
@@ -9735,10 +9759,18 @@ impl KoraContract {
 
     /// Verifies the chain-of-custody log for `pet_id` is internally consistent:
     /// the first entry's `from` matches the pet's creator, each entry's `from`
-    /// matches the previous entry's `to`, and the last entry's `to` matches the
-    /// pet's current owner. Pure read function — no storage writes.
+    /// matches the previous entry's `to`, the last entry's `to` matches the
+    /// pet's current owner, and timestamps are non-decreasing (i.e. each entry
+    /// must have a timestamp ≥ its predecessor's timestamp). Pure read — no
+    /// storage writes.
     ///
     /// A pet with no transfers (empty chain) is trivially valid.
+    ///
+    /// Same-ledger transfers (two entries sharing an identical block timestamp,
+    /// e.g. shelter intake and immediate foster placement in the same block) are
+    /// explicitly allowed. Only truly retroactive entries — where an entry's
+    /// timestamp is strictly less than the previous entry's timestamp — are
+    /// rejected.
     pub fn verify_custody_chain(env: Env, pet_id: u64) -> CustodyVerificationResult {
         let chain: Vec<CustodyEntry> = env
             .storage()
@@ -9755,10 +9787,31 @@ impl KoraContract {
 
         // The creator is the pet's registered owner at the first ownership
         // record (previous_owner == new_owner at registration), independent
-        // of the custody chain itself.
-        let creator = Self::get_ownership_history(env.clone(), pet_id, 0, 1)
-            .get(0)
-            .map(|record| record.previous_owner);
+        // of the custody chain itself. We read directly from storage here to
+        // bypass the caller-auth check in the public get_ownership_history API
+        // (this is an internal read, not a user-initiated call).
+        let creator = {
+            let count: u64 = env
+                .storage()
+                .instance()
+                .get(&SystemKey::PetOwnershipRecordCount(pet_id))
+                .unwrap_or(0);
+            if count == 0 {
+                None
+            } else {
+                env.storage()
+                    .instance()
+                    .get::<SystemKey, u64>(&SystemKey::PetOwnershipRecordIndex((pet_id, 1)))
+                    .and_then(|record_id| {
+                        env.storage()
+                            .instance()
+                            .get::<SystemKey, OwnershipRecord>(
+                                &SystemKey::PetOwnershipRecord(record_id),
+                            )
+                    })
+                    .map(|record| record.previous_owner)
+            }
+        };
 
         let first = chain.get(0).unwrap();
         if Some(first.from.clone()) != creator {
@@ -9771,7 +9824,20 @@ impl KoraContract {
         for i in 1..chain.len() {
             let prev = chain.get(i - 1).unwrap();
             let curr = chain.get(i).unwrap();
+
+            // Address-continuity: each entry must pick up from where the
+            // previous one ended.
             if curr.from != prev.to {
+                return CustodyVerificationResult {
+                    valid: false,
+                    gap_at: Some(i),
+                };
+            }
+
+            // Timestamp ordering: entries must be non-decreasing.  Equal
+            // timestamps are valid (same-ledger / same-block transfers).
+            // Strictly earlier timestamps indicate a retroactive (forged) entry.
+            if curr.timestamp < prev.timestamp {
                 return CustodyVerificationResult {
                     valid: false,
                     gap_at: Some(i),
@@ -9798,12 +9864,46 @@ impl KoraContract {
         }
     }
 
+    /// Return the paginated ownership history for `pet_id`.
+    ///
+    /// # Access control
+    ///
+    /// When the pet's `privacy_level` is [`PrivacyLevel::Private`] only the
+    /// current owner and registered admins may view prior owner addresses.
+    /// Any other caller (including unauthenticated / anonymous callers) will
+    /// cause this function to panic with [`ContractError::Unauthorized`].
+    ///
+    /// For [`PrivacyLevel::Public`] and [`PrivacyLevel::Restricted`] pets the
+    /// records are returned to any caller without restriction, preserving the
+    /// existing behaviour for non-private pets.
+    ///
+    /// The `caller` parameter must be the address that is authorising this
+    /// call; it is required and validated when `privacy_level == Private`.
     pub fn get_ownership_history(
         env: Env,
         pet_id: u64,
+        caller: Address,
         offset: u64,
         limit: u32,
     ) -> Vec<OwnershipRecord> {
+        // Load the pet to inspect its privacy level and current owner.
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        // For private pets, only the current owner or an admin may view the
+        // full history. Require auth and verify identity before proceeding.
+        if pet.privacy_level == PrivacyLevel::Private {
+            caller.require_auth();
+            let is_owner = caller == pet.owner;
+            let is_admin = Self::is_admin_address(&env, &caller);
+            if !is_owner && !is_admin {
+                panic_with_error!(&env, ContractError::Unauthorized);
+            }
+        }
+
         let count: u64 = env
             .storage()
             .instance()

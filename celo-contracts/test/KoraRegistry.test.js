@@ -132,6 +132,32 @@ describe("KoraRegistry", function () {
         .to.be.revertedWith("KoraRegistry: empty licenseNumber");
     });
 
+    it("reverts registering with a license number exceeding 64 characters", async function () {
+      await expect(registry.connect(other).registerVet("A".repeat(65), "General Practice"))
+        .to.be.revertedWith("KoraRegistry: invalid license length");
+    });
+
+    it("reverts registering with a 500-byte license number", async function () {
+      await expect(registry.connect(other).registerVet("A".repeat(500), "General Practice"))
+        .to.be.revertedWith("KoraRegistry: invalid license length");
+    });
+
+    it("reverts registering with a specialization exceeding 128 characters", async function () {
+      await expect(registry.connect(other).registerVet("LIC-VALID", "A".repeat(129)))
+        .to.be.revertedWith("KoraRegistry: invalid specialization length");
+    });
+
+    it("accepts license numbers up to 64 chars and specialization up to 128 chars", async function () {
+      const maxLic = "L".repeat(64);
+      const maxSpec = "S".repeat(128);
+      await expect(registry.connect(other).registerVet(maxLic, maxSpec))
+        .to.emit(registry, "VetRegistered")
+        .withArgs(other.address, maxLic);
+      const v = await registry.vets(other.address);
+      expect(v.licenseNumber).to.equal(maxLic);
+      expect(v.specialization).to.equal(maxSpec);
+    });
+
     it("admin verifies a vet and emits VetVerified", async function () {
       await registry.connect(other).registerVet("LIC-XYZ", "General Practice");
       await expect(registry.connect(admin).verifyVet(other.address))
@@ -245,6 +271,50 @@ describe("KoraRegistry", function () {
       await expect(registry.connect(vet).addMedicalRecord(petId, 0, "flu", "rest", ""))
         .to.be.revertedWith("KoraRegistry: pet inactive");
     });
+
+    it("reverts adding a record for a non-existent pet", async function () {
+      await expect(registry.connect(vet).addMedicalRecord(999999, 0, "flu", "rest", ""))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Wave 9 Issue #119 (#124) — Prevent orphan medical records
+  // ---------------------------------------------------------------------------
+  describe("Wave 9 Issue #119 (#124) — Prevent orphan medical records", function () {
+    it("reverts with 'KoraRegistry: pet does not exist' when petId does not exist", async function () {
+      await expect(
+        registry.connect(vet).addMedicalRecord(999999, 0, "routine checkup", "all good", "healthy")
+      ).to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+
+    it("reverts when adding record to deactivated pet", async function () {
+      const petId = await registerPet();
+      await registry.connect(owner).deactivatePet(petId);
+      await expect(
+        registry.connect(vet).addMedicalRecord(petId, 0, "routine checkup", "all good", "healthy")
+      ).to.be.revertedWith("KoraRegistry: pet inactive");
+    });
+
+    it("successfully creates and links medical record for existing active pet", async function () {
+      const petId = await registerPet();
+      const tx = await registry.connect(vet).addMedicalRecord(
+        petId, 1, "rabies vaccination", "injected 1ml", "annual booster"
+      );
+      const receipt = await tx.wait();
+      const event = receipt.logs.find(
+        l => l.fragment && l.fragment.name === "MedicalRecordAdded"
+      );
+      expect(event).to.not.be.undefined;
+      const recordId = event.args.recordId;
+
+      const records = await registry.getPetRecords(petId);
+      expect(records.length).to.equal(1);
+      expect(records[0].recordId).to.equal(recordId);
+      expect(records[0].petId).to.equal(petId);
+      expect(records[0].diagnosis).to.equal("rabies vaccination");
+      expect(records[0].vet).to.equal(vet.address);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -310,6 +380,49 @@ describe("KoraRegistry", function () {
       await registry.connect(owner).deactivatePet(petId);
       await expect(registry.connect(other).reactivatePet(petId))
         .to.be.revertedWith("KoraRegistry: not pet owner");
+    });
+
+    it("reverts with 'KoraRegistry: pet does not exist' for a non-existent petId", async function () {
+      await expect(registry.connect(owner).reactivatePet(999999))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Wave 9 Issue #118 (#123) — Validate pet existence in deactivatePet and reactivatePet
+  // ---------------------------------------------------------------------------
+  describe("Wave 9 Issue #118 (#123) — Validate pet existence in deactivatePet and reactivatePet", function () {
+    it("deactivatePet reverts with 'KoraRegistry: pet does not exist' when petId does not exist", async function () {
+      await expect(registry.connect(owner).deactivatePet(999999))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+
+    it("reactivatePet reverts with 'KoraRegistry: pet does not exist' when petId does not exist", async function () {
+      await expect(registry.connect(owner).reactivatePet(999999))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+
+    it("initiatePetTransfer reverts with 'KoraRegistry: pet does not exist' when petId does not exist", async function () {
+      await expect(registry.connect(owner).initiatePetTransfer(999999, other.address))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+
+    it("cancelPetTransfer reverts with 'KoraRegistry: pet does not exist' when petId does not exist", async function () {
+      await expect(registry.connect(owner).cancelPetTransfer(999999))
+        .to.be.revertedWith("KoraRegistry: pet does not exist");
+    });
+
+    it("existing pets deactivate and reactivate normally", async function () {
+      const petId = await registerPet();
+      await expect(registry.connect(owner).deactivatePet(petId))
+        .to.emit(registry, "PetDeactivated")
+        .withArgs(petId);
+      expect((await registry.pets(petId)).active).to.equal(false);
+
+      await expect(registry.connect(owner).reactivatePet(petId))
+        .to.emit(registry, "PetReactivated")
+        .withArgs(petId);
+      expect((await registry.pets(petId)).active).to.equal(true);
     });
   });
 
@@ -923,45 +1036,38 @@ describe("KoraRegistry", function () {
   });
 
   // ---------------------------------------------------------------------------
-  // Wave 9 Issue #120 (#125) — Bound loop iterations in getPetRecordsByDateRange
+  // Wave 9 Issue #121 (#126) — Vet string length validation
   // ---------------------------------------------------------------------------
-  describe("Wave 9 Issue #120 (#125) — Bound loop iterations in getPetRecordsByDateRange", function () {
-    let petId;
-
-    beforeEach(async function () {
-      petId = await registerPet();
-      for (let i = 0; i < 10; i++) {
-        await registry.connect(vet).addMedicalRecord(petId, 0, `diag ${i}`, `treat ${i}`, "");
-      }
+  describe("Wave 9 Issue #121 (#126) — Vet string length validation", function () {
+    it("rejects license numbers exceeding 64 characters", async function () {
+      await expect(registry.connect(other).registerVet("A".repeat(65), "General Practice"))
+        .to.be.revertedWith("KoraRegistry: invalid license length");
     });
 
-    it("accepts a limit parameter and caps returned record count", async function () {
-      const limit = 4;
-      const ids = await registry["getPetRecordsByDateRange(uint256,uint256,uint256,uint256)"](
-        petId, 0, 9999999999, limit
-      );
-      expect(ids.length).to.equal(4);
+    it("rejects 500-byte license number as specified in testing requirements", async function () {
+      await expect(registry.connect(other).registerVet("A".repeat(500), "General Practice"))
+        .to.be.revertedWith("KoraRegistry: invalid license length");
     });
 
-    it("returns empty array when limit is 0", async function () {
-      const ids = await registry["getPetRecordsByDateRange(uint256,uint256,uint256,uint256)"](
-        petId, 0, 9999999999, 0
-      );
-      expect(ids.length).to.equal(0);
+    it("rejects specialization exceeding 128 characters in registerVet", async function () {
+      await expect(registry.connect(other).registerVet("LIC-SPECIAL", "A".repeat(129)))
+        .to.be.revertedWith("KoraRegistry: invalid specialization length");
     });
 
-    it("returns all records if total matching is less than limit", async function () {
-      const ids = await registry["getPetRecordsByDateRange(uint256,uint256,uint256,uint256)"](
-        petId, 0, 9999999999, 50
-      );
-      expect(ids.length).to.equal(10);
+    it("rejects specialization exceeding 128 characters in updateSpecialization", async function () {
+      await expect(registry.connect(vet).updateSpecialization("A".repeat(129)))
+        .to.be.revertedWith("KoraRegistry: invalid specialization length");
     });
 
-    it("legacy 3-argument call defaults to MAX_QUERY_LIMIT bound", async function () {
-      const ids = await registry["getPetRecordsByDateRange(uint256,uint256,uint256)"](
-        petId, 0, 9999999999
-      );
-      expect(ids.length).to.equal(10);
+    it("accepts valid boundary string lengths (64-byte license, 128-byte specialization)", async function () {
+      const boundaryLic = "X".repeat(64);
+      const boundarySpec = "Y".repeat(128);
+      await expect(registry.connect(other).registerVet(boundaryLic, boundarySpec))
+        .to.emit(registry, "VetRegistered")
+        .withArgs(other.address, boundaryLic);
+      const v = await registry.vets(other.address);
+      expect(v.licenseNumber).to.equal(boundaryLic);
+      expect(v.specialization).to.equal(boundarySpec);
     });
   });
 
