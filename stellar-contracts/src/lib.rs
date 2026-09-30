@@ -9757,10 +9757,18 @@ impl KoraContract {
 
     /// Verifies the chain-of-custody log for `pet_id` is internally consistent:
     /// the first entry's `from` matches the pet's creator, each entry's `from`
-    /// matches the previous entry's `to`, and the last entry's `to` matches the
-    /// pet's current owner. Pure read function — no storage writes.
+    /// matches the previous entry's `to`, the last entry's `to` matches the
+    /// pet's current owner, and timestamps are non-decreasing (i.e. each entry
+    /// must have a timestamp ≥ its predecessor's timestamp). Pure read — no
+    /// storage writes.
     ///
     /// A pet with no transfers (empty chain) is trivially valid.
+    ///
+    /// Same-ledger transfers (two entries sharing an identical block timestamp,
+    /// e.g. shelter intake and immediate foster placement in the same block) are
+    /// explicitly allowed. Only truly retroactive entries — where an entry's
+    /// timestamp is strictly less than the previous entry's timestamp — are
+    /// rejected.
     pub fn verify_custody_chain(env: Env, pet_id: u64) -> CustodyVerificationResult {
         let chain: Vec<CustodyEntry> = env
             .storage()
@@ -9793,7 +9801,20 @@ impl KoraContract {
         for i in 1..chain.len() {
             let prev = chain.get(i - 1).unwrap();
             let curr = chain.get(i).unwrap();
+
+            // Address-continuity: each entry must pick up from where the
+            // previous one ended.
             if curr.from != prev.to {
+                return CustodyVerificationResult {
+                    valid: false,
+                    gap_at: Some(i),
+                };
+            }
+
+            // Timestamp ordering: entries must be non-decreasing.  Equal
+            // timestamps are valid (same-ledger / same-block transfers).
+            // Strictly earlier timestamps indicate a retroactive (forged) entry.
+            if curr.timestamp < prev.timestamp {
                 return CustodyVerificationResult {
                     valid: false,
                     gap_at: Some(i),
