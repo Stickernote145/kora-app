@@ -17,6 +17,9 @@ contract KoraRegistry is Pausable {
     /// @notice Maximum byte length for long string fields (diagnosis, treatment, notes).
     uint256 public constant MAX_LONG_LEN  = 1000;
 
+    /// @notice Maximum number of records scanned/returned in date-range query when limit is omitted.
+    uint256 public constant MAX_QUERY_LIMIT = 100;
+
     // -------------------------------------------------------------------------
     // State
     // -------------------------------------------------------------------------
@@ -180,6 +183,7 @@ contract KoraRegistry is Pausable {
     }
 
     modifier onlyPetOwner(uint256 petId) {
+        require(pets[petId].owner != address(0), "KoraRegistry: pet does not exist");
         require(pets[petId].owner == msg.sender, "KoraRegistry: not pet owner");
         _;
     }
@@ -244,8 +248,8 @@ contract KoraRegistry is Pausable {
     /// @param specialization Area of specialization.
     function registerVet(string calldata licenseNumber, string calldata specialization) external whenNotPaused {
         require(bytes(licenseNumber).length > 0, "KoraRegistry: empty licenseNumber");
-        require(bytes(licenseNumber).length <= MAX_SHORT_LEN, "KoraRegistry: licenseNumber too long");
-        require(bytes(specialization).length <= MAX_LONG_LEN,  "KoraRegistry: specialization too long");
+        require(bytes(licenseNumber).length <= 64, "KoraRegistry: invalid license length");
+        require(bytes(specialization).length <= 128, "KoraRegistry: invalid specialization length");
 
         bytes32 key = _normalizeLicenseKey(licenseNumber);
         address existingHolder = _licenseToVet[key];
@@ -296,6 +300,7 @@ contract KoraRegistry is Pausable {
     /// @param specialization New specialization string.
     function updateSpecialization(string calldata specialization) external whenNotPaused {
         require(vets[msg.sender].vetAddress == msg.sender, "KoraRegistry: not a registered vet");
+        require(bytes(specialization).length <= 128, "KoraRegistry: invalid specialization length");
         vets[msg.sender].specialization = specialization;
         emit VetSpecializationUpdated(msg.sender, specialization);
     }
@@ -439,6 +444,7 @@ contract KoraRegistry is Pausable {
         string calldata treatment,
         string calldata notes
     ) external onlyVerifiedVet whenNotPaused returns (uint256 recordId) {
+        require(pets[petId].owner != address(0), "KoraRegistry: pet does not exist");
         require(pets[petId].active, "KoraRegistry: pet inactive");
         require(bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
             "KoraRegistry: invalid diagnosis length");
@@ -506,12 +512,13 @@ contract KoraRegistry is Pausable {
         string calldata treatment,
         string calldata notes
     ) external whenNotPaused {
+        require(recordId > 0 && recordId <= _recordCounter, "KoraRegistry: record does not exist");
         uint256 petId = _recordPet[recordId];
         MedicalRecord storage rec = _petRecords[petId][_recordIndex[recordId]];
         require(rec.recordId == recordId, "KoraRegistry: record not found");
         require(
             msg.sender == rec.vet || msg.sender == admin,
-            "KoraRegistry: not authorized"
+            "KoraRegistry: not authorised to correct record"
         );
         require(bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
             "KoraRegistry: invalid diagnosis length");
@@ -571,6 +578,7 @@ contract KoraRegistry is Pausable {
     }
 
     /// @notice Return record IDs for `petId` whose timestamp falls within [startDate, endDate].
+    /// @notice Return record IDs for `petId` whose timestamp falls within [startDate, endDate], capped by MAX_QUERY_LIMIT.
     /// @param petId     The pet to query.
     /// @param startDate Lower bound Unix timestamp (inclusive).
     /// @param endDate   Upper bound Unix timestamp (inclusive).
@@ -580,18 +588,36 @@ contract KoraRegistry is Pausable {
         view
         returns (uint256[] memory ids)
     {
+        return getPetRecordsByDateRange(petId, startDate, endDate, MAX_QUERY_LIMIT);
+    }
+
+    /// @notice Return record IDs for `petId` whose timestamp falls within [startDate, endDate], bounded by `limit`.
+    /// @param petId     The pet to query.
+    /// @param startDate Lower bound Unix timestamp (inclusive).
+    /// @param endDate   Upper bound Unix timestamp (inclusive).
+    /// @param limit     Maximum number of matching records to return.
+    /// @return ids      Array of matching record IDs.
+    function getPetRecordsByDateRange(
+        uint256 petId,
+        uint256 startDate,
+        uint256 endDate,
+        uint256 limit
+    ) public view returns (uint256[] memory ids) {
+        if (limit == 0) {
+            return new uint256[](0);
+        }
         MedicalRecord[] storage all = _petRecords[petId];
         uint256 total = all.length;
 
         uint256 count;
-        for (uint256 i = 0; i < total; i++) {
+        for (uint256 i = 0; i < total && count < limit; i++) {
             uint256 ts = all[i].timestamp;
             if (ts >= startDate && ts <= endDate) count++;
         }
 
         ids = new uint256[](count);
         uint256 j;
-        for (uint256 i = 0; i < total; i++) {
+        for (uint256 i = 0; i < total && j < count; i++) {
             uint256 ts = all[i].timestamp;
             if (ts >= startDate && ts <= endDate) {
                 ids[j] = all[i].recordId;

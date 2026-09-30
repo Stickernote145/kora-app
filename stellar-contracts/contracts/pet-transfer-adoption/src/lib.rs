@@ -157,6 +157,9 @@ pub struct CustodyEntry {
     pub to: Address,
     pub timestamp: u64,
     pub transfer_type: TransferType,
+    /// Physical condition of the animal at the time of transfer (e.g. "healthy",
+    /// "injured – treated", "malnourished"). `None` when not recorded.
+    pub condition_notes: Option<String>,
 }
 
 /// Maximum number of entries retained in ownership history per pet.
@@ -352,6 +355,7 @@ fn append_custody_entry(
     from: Address,
     to: Address,
     transfer_type: TransferType,
+    condition_notes: Option<String>,
 ) {
     let mut chain: Vec<CustodyEntry> = env
         .storage()
@@ -363,6 +367,7 @@ fn append_custody_entry(
         to,
         timestamp: env.ledger().timestamp(),
         transfer_type,
+        condition_notes,
     });
     // Keep only the most recent MAX_CUSTODY_CHAIN_LENGTH entries.
     if chain.len() > MAX_CUSTODY_CHAIN_LENGTH {
@@ -963,6 +968,7 @@ impl PetOwnershipContract {
             pending.from.clone(),
             pending.to.clone(),
             TransferType::Adoption,
+            None,
         );
 
         env.events().publish(
@@ -1044,6 +1050,7 @@ impl PetOwnershipContract {
             pending.from.clone(),
             pending.to.clone(),
             TransferType::Adoption,
+            None,
         );
 
         env.events().publish(
@@ -1194,6 +1201,7 @@ impl PetOwnershipContract {
             escrowed.from.clone(),
             escrowed.to.clone(),
             TransferType::Direct,
+            None,
         );
 
         env.events().publish(
@@ -1506,6 +1514,7 @@ impl PetOwnershipContract {
                 old_owner.clone(),
                 to.clone(),
                 TransferType::Direct,
+                None,
             );
 
             env.events()
